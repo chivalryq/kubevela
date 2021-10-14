@@ -85,5 +85,4 @@ var DefaultFilterAnnots = []string{
 	oam.AnnotationInplaceUpgrade,
 	oam.AnnotationFilterLabelKeys,
 	oam.AnnotationFilterAnnotationKeys,
-	oam.AnnotationLastAppliedConfiguration,
 }

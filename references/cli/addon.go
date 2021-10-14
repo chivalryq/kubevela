@@ -24,13 +24,12 @@ import (
 	"text/template"
 	"time"
 
-	common2 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
-
 	"github.com/Masterminds/sprig"
 	"github.com/gosuri/uitable"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	v1 "k8s.io/api/core/v1"
+	errors2 "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -60,26 +59,9 @@ var statusInstalled = "installed"
 var clt client.Client
 var clientArgs common.Args
 
-var legacyAddonNamespace map[string]string
-
 func init() {
 	clientArgs, _ = common.InitBaseRestConfig()
 	clt, _ = clientArgs.GetClient()
-	legacyAddonNamespace = map[string]string{
-		"fluxcd":                     types.DefaultKubeVelaNS,
-		"ns-flux-system":             types.DefaultKubeVelaNS,
-		"kruise":                     types.DefaultKubeVelaNS,
-		"prometheus":                 types.DefaultKubeVelaNS,
-		"observability":              "observability",
-		"observability-asset":        types.DefaultKubeVelaNS,
-		"istio":                      "istio-system",
-		"ns-istio-system":            types.DefaultKubeVelaNS,
-		"keda":                       types.DefaultKubeVelaNS,
-		"ocm-cluster-manager":        types.DefaultKubeVelaNS,
-		"terraform":                  types.DefaultKubeVelaNS,
-		"terraform-provider/alibaba": "default",
-		"terraform-provider/azure":   "default",
-	}
 }
 
 // NewAddonCommand create `addon` command
@@ -103,10 +85,9 @@ func NewAddonCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command 
 // NewAddonListCommand create addon list command
 func NewAddonListCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:     "list",
-		Aliases: []string{"ls"},
-		Short:   "List addons",
-		Long:    "List addons in KubeVela",
+		Use:   "list",
+		Short: "List addons",
+		Long:  "List addons in KubeVela",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			err := listAddons()
 			if err != nil {
@@ -137,7 +118,6 @@ func NewAddonEnableCommand(ioStream cmdutil.IOStreams) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Successfully enable addon:%s\n", name)
 			return nil
 		},
 	}
@@ -175,7 +155,6 @@ func NewAddonDisableCommand(ioStream cmdutil.IOStreams) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("Successfully disable addon:%s\n", name)
 			return nil
 		},
 	}
@@ -188,9 +167,9 @@ func listAddons() error {
 	}
 	addons := repo.listAddons()
 	table := uitable.New()
-	table.AddRow("NAME", "DESCRIPTION", "STATUS")
+	table.AddRow("NAME", "DESCRIPTION", "STATUS", "IN-NAMESPACE")
 	for _, addon := range addons {
-		table.AddRow(addon.name, addon.description, addon.getStatus())
+		table.AddRow(addon.name, addon.description, addon.getStatus(), addon.addonNamespace)
 	}
 	fmt.Println(table.String())
 	return nil
@@ -207,65 +186,38 @@ func enableAddon(name string, args map[string]string) error {
 	}
 	addon.setArgs(args)
 	err = addon.enable()
-	return err
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Successfully enable addon:%s\n", addon.name)
+	return nil
 }
 
 func disableAddon(name string) error {
-	if isLegacyAddonExist(name) {
-		return tryDisableInitializerAddon(name)
-	}
 	repo, err := NewAddonRepo()
 	if err != nil {
 		return err
 	}
 	addon, err := repo.getAddon(name)
 	if err != nil {
-		return errors.Wrap(err, "get addon err")
+		return err
 	}
 	if addon.getStatus() == statusUninstalled {
 		fmt.Printf("Addon %s is not installed\n", addon.name)
 		return nil
 	}
-	return addon.disable()
-
-}
-
-func isLegacyAddonExist(name string) bool {
-	if namespace, ok := legacyAddonNamespace[name]; ok {
-		convertedAddonName := TransAddonName(name)
-		init := unstructured.Unstructured{
-			Object: map[string]interface{}{
-				"apiVersion": "core.oam.dev/v1beta1",
-				"kind":       "Initializer",
-			},
-		}
-		err := clt.Get(context.TODO(), client.ObjectKey{
-			Namespace: namespace,
-			Name:      convertedAddonName,
-		}, &init)
-		return err == nil
+	err = addon.disable()
+	if err != nil {
+		return err
 	}
-	return false
-}
-
-func tryDisableInitializerAddon(addonName string) error {
-	fmt.Printf("Trying to disable addon in initializer implementation...\n")
-	init := unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "core.oam.dev/v1beta1",
-			"kind":       "Initializer",
-			"metadata": map[string]interface{}{
-				"name":      TransAddonName(addonName),
-				"namespace": legacyAddonNamespace[addonName],
-			},
-		},
-	}
-	return clt.Delete(context.TODO(), &init)
-
+	fmt.Printf("Successfully disable addon:%s\n", addon.name)
+	return nil
 }
 func newAddon(data *v1.ConfigMap) *Addon {
 	description := data.ObjectMeta.Annotations[DescAnnotation]
-	a := Addon{name: data.Annotations[oam.AnnotationAddonsName], description: description, data: data.Data["application"]}
+	a := Addon{name: data.Annotations[oam.AnnotationAddonsName], description: description, initYaml: data.Data["initializer"]}
+	init, _ := a.renderInitializer()
+	a.addonNamespace = init.GetNamespace()
 	return &a
 }
 
@@ -299,22 +251,13 @@ type configMapAddonRepo struct {
 	maps []v1.ConfigMap
 }
 
-// AddonNotFoundErr means addon not found
-type AddonNotFoundErr struct {
-	addonName string
-}
-
-func (e AddonNotFoundErr) Error() string {
-	return fmt.Sprintf("addon %s not found", e.addonName)
-}
-
 func (c configMapAddonRepo) getAddon(name string) (Addon, error) {
 	for i := range c.maps {
 		if addonName, ok := c.maps[i].Annotations[oam.AnnotationAddonsName]; ok && name == addonName {
 			return *newAddon(&c.maps[i]), nil
 		}
 	}
-	return Addon{}, AddonNotFoundErr{addonName: name}
+	return Addon{}, fmt.Errorf("addon: %s not found", name)
 }
 
 func (c configMapAddonRepo) listAddons() []Addon {
@@ -328,41 +271,42 @@ func (c configMapAddonRepo) listAddons() []Addon {
 
 // Addon consist of a Initializer resource to enable an addon
 type Addon struct {
-	name        string
-	description string
-	data        string
+	name           string
+	addonNamespace string // addonNamespace is where Initializer will be apply
+	description    string
+	initYaml       string
 	// Args is map for renderInitializer
 	Args        map[string]string
-	application *unstructured.Unstructured
+	initializer *unstructured.Unstructured
 	gvk         *schema.GroupVersionKind
 }
 
 func (a *Addon) getGVK() (*schema.GroupVersionKind, error) {
 	if a.gvk == nil {
-		if a.application == nil {
-			_, err := a.renderApplication()
+		if a.initializer == nil {
+			_, err := a.renderInitializer()
 			if err != nil {
 				return nil, err
 			}
 		}
-		gvk := schema.FromAPIVersionAndKind(a.application.GetAPIVersion(), a.application.GetKind())
+		gvk := schema.FromAPIVersionAndKind(a.initializer.GetAPIVersion(), a.initializer.GetKind())
 		a.gvk = &gvk
 	}
 	return a.gvk, nil
 }
 
-func (a *Addon) renderApplication() (*unstructured.Unstructured, error) {
+func (a *Addon) renderInitializer() (*unstructured.Unstructured, error) {
 	if a.Args == nil {
 		a.Args = map[string]string{}
 	}
-	t, err := template.New("addon-template").Delims("[[", "]]").Funcs(sprig.TxtFuncMap()).Parse(a.data)
+	t, err := template.New("addon-template").Delims("[[", "]]").Funcs(sprig.TxtFuncMap()).Parse(a.initYaml)
 	if err != nil {
 		return nil, errors.Wrap(err, "parsing addon initializer template error")
 	}
 	buf := bytes.Buffer{}
 	err = t.Execute(&buf, a)
 	if err != nil {
-		return nil, errors.Wrap(err, "application template render fail")
+		return nil, errors.Wrap(err, "initializer template render fail")
 	}
 	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
 	obj := &unstructured.Unstructured{}
@@ -370,44 +314,57 @@ func (a *Addon) renderApplication() (*unstructured.Unstructured, error) {
 	if err != nil {
 		return nil, err
 	}
-	a.application = obj
+	a.initializer = obj
 	a.gvk = gvk
-	return a.application, nil
+	return a.initializer, nil
 }
 
 func (a *Addon) enable() error {
 	applicator := apply.NewAPIApplicator(clt)
 	ctx := context.Background()
-	obj, err := a.renderApplication()
+	obj, err := a.renderInitializer()
 	if err != nil {
 		return err
 	}
+	var ns v1.Namespace
+	err = clt.Get(ctx, types2.NamespacedName{Name: obj.GetNamespace()}, &ns)
+	if err != nil && errors2.IsNotFound(err) {
+		fmt.Printf("Creating namespace: %s\n", obj.GetNamespace())
+		err = clt.Create(ctx, &v1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: obj.GetNamespace(),
+			},
+		})
+	}
+	if err != nil {
+		return errors.Wrap(err, "Create namespace error")
+	}
 	err = applicator.Apply(ctx, obj)
 	if err != nil {
-		return errors.Wrapf(err, "Error occurs when apply addon application: %s\n", a.name)
+		return errors.Wrapf(err, "Error occurs when enableing addon: %s\n", a.name)
 	}
-	err = waitApplicationRunning(a.application)
+	err = waitForInitializerSuccess(obj)
 	if err != nil {
-		return errors.Wrap(err, "Error occurs when waiting addon applicatoin running")
+		return errors.Wrapf(err, "Error occurs when waiting for addon enabled: %s\n", a.name)
 	}
 	return nil
 }
 
-func waitApplicationRunning(obj *unstructured.Unstructured) error {
+func waitForInitializerSuccess(obj *unstructured.Unstructured) error {
 	ctx := context.Background()
 	period := 20 * time.Second
 	timeout := 10 * time.Minute
-	var app v1beta1.Application
+	var init v1beta1.Initializer
 	return wait.PollImmediate(period, timeout, func() (done bool, err error) {
-		err = clt.Get(ctx, types2.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, &app)
+		err = clt.Get(ctx, types2.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, &init)
 		if err != nil {
 			return false, client.IgnoreNotFound(err)
 		}
-		phase := app.Status.Phase
-		if phase == common2.ApplicationRunning {
+		phase := init.Status.Phase
+		if phase == v1beta1.InitializerSuccess {
 			return true, nil
 		}
-		fmt.Printf("Application %s is in phase:%s...\n", obj.GetName(), phase)
+		fmt.Printf("Initializer %s is in phase:%s...\n", obj.GetName(), phase)
 		return false, nil
 	})
 }
@@ -420,7 +377,7 @@ func (a *Addon) disable() error {
 	if err != nil {
 		return err
 	}
-	obj, err := a.renderApplication()
+	obj, err := a.renderInitializer()
 	if err != nil {
 		return err
 	}
@@ -453,11 +410,11 @@ func (a *Addon) disable() error {
 }
 
 func (a *Addon) getStatus() string {
-	var application v1beta1.Application
+	var initializer v1beta1.Initializer
 	err := clt.Get(context.Background(), client.ObjectKey{
-		Namespace: types.DefaultKubeVelaNS,
+		Namespace: a.addonNamespace,
 		Name:      TransAddonName(a.name),
-	}, &application)
+	}, &initializer)
 	if err != nil {
 		return statusUninstalled
 	}

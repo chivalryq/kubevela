@@ -1,35 +1,27 @@
 apiVersion: core.oam.dev/v1beta1
-kind: Application
+kind: Initializer
 metadata:
   annotations:
     addons.oam.dev/description: "Flux is a set of continuous and progressive delivery solutions for Kubernetes"
-    filter.oam.dev/annotation-keys: app.oam.dev/last-applied-configuration
   name: fluxcd
   namespace: vela-system
 spec:
-  workflow:
-    steps:
-      - name: apply-ns
-        type: apply-component
-        properties:
-          component: ns-flux-system
-      - name: apply-resources
-        type: apply-remaining
-  components:
-    - name: ns-flux-system
-      type: raw
-      properties:
-        apiVersion: v1
-        kind: Namespace
-        metadata:
-          name: flux-system
+  dependsOn:
+    - ref:
+        apiVersion: core.oam.dev/v1beta1
+        kind: Initializer
+        name: ns-flux-system
+        namespace: vela-system
+  appTemplate:
+    spec:
+      components:
 {{ range .ResourceFiles }}
-    - name: {{ .Name }}
-      type: raw
-      properties:
-{{ .Content | indent 8 }} {{ end }}
+        - name: {{ .Name }}
+          type: raw
+          properties:
+{{ .Content | indent 12 }} {{ end }}
 {{ range .DefinitionFiles }}
-    - name: {{ .Name }}
-      type: raw
-      properties:
-{{ .Content | indent 8 }} {{ end }}
+        - name: {{ .Name }}
+          type: raw
+          properties:
+{{ .Content | indent 12 }} {{ end }}

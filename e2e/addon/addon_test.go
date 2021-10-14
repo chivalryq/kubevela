@@ -38,12 +38,12 @@ var _ = Describe("Addon Test", func() {
 		k8sClient, err := args.GetClient()
 		Expect(err).Should(BeNil())
 		It("Apply test addon", func() {
-			Expect(yaml.Unmarshal([]byte(testAddon), &cmSimpleAddon)).Should(BeNil())
+			Expect(yaml.Unmarshal([]byte(test_addon), &cmSimpleAddon)).Should(BeNil())
 			err = k8sClient.Create(context.Background(), &cmSimpleAddon)
 			Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
 		})
 		It("Apply test input addon", func() {
-			Expect(yaml.Unmarshal([]byte(testInputAddon), &cmInputAddon)).Should(BeNil())
+			Expect(yaml.Unmarshal([]byte(test_input_addon), &cmInputAddon)).Should(BeNil())
 			err = k8sClient.Create(context.Background(), &cmInputAddon)
 			Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
 		})
@@ -100,7 +100,7 @@ var _ = Describe("Addon Test", func() {
 
 })
 
-var testAddon = `
+var test_addon = `
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -112,46 +112,33 @@ metadata:
   name: test-addon
   namespace: vela-system
 data:
-  application: |
+  initializer: |
     apiVersion: core.oam.dev/v1beta1
-    kind: Application
+    kind: Initializer
     metadata:
       annotations:
         addons.oam.dev/description: This is a addon for e2e test
       name: test-addon
-      namespace: vela-system
+      namespace: test-addon-system
     spec:
-      workflow:
-        steps:
-          - name: apply-ns
-            type: apply-component
-            properties:
-              component: ns-test-addon-system
-          - name: apply-resources
-            type: apply-remaining
-      components:
-        - name: ns-test-addon-system
-          type: raw
-          properties:
-            apiVersion: v1
-            kind: Namespace
-            metadata:
-              name: test-addon-system
-        - name: test-addon-pod
-          type: raw
-          properties:
-            apiVersion: v1
-            kind: Pod
-            metadata:
-              name: test-addon-pod
-            spec:
-              namespace: test-addon-system
-              containers:
-                - name: test-addon-pod-container
-                  image: nginx
+      appTemplate:
+        spec:
+          components:
+            - name: test-addon-pod
+              type: raw
+              properties:
+                apiVersion: v1
+                kind: Pod
+                metadata:
+                  name: test-addon-pod
+                  namespace: test-addon-system
+                spec:
+                  containers:
+                    - name: test-addon-pod-container
+                      image: nginx
 `
 
-var testInputAddon = `
+var test_input_addon = `
 kind: ConfigMap
 metadata:
   annotations:
@@ -163,20 +150,31 @@ metadata:
   namespace: vela-system
 apiVersion: v1
 data:
-  application: |
+  initializer: |
     apiVersion: core.oam.dev/v1beta1
-    kind: Application
+    kind: Initializer
     metadata:
       annotations:
         addons.oam.dev/description: This is a test addon for test addon input
       name: test-input-addon
       namespace: vela-system
     spec:
-      components:
-      - name: test-chart
-        properties:
-          chart: [[ index .Args "chart" ]]
-          repoType: helm
-          url: [[ index .Args "url" ]]
-        type: helm
+      appTemplate:
+        spec:
+          components:
+          - name: test-chart
+            properties:
+              chart: [[ index .Args "chart" ]]
+              repoType: helm
+              url: [[ index .Args "url" ]]
+            type: helm
+        status: {}
+      dependsOn:
+      - ref:
+          apiVersion: core.oam.dev/v1beta1
+          kind: Initializer
+          name: fluxcd
+          namespace: vela-system
+    status:
+      observedGeneration: 0
 `

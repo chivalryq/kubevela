@@ -43,11 +43,11 @@ import (
 )
 
 const (
-	// TemplateName represents the Application template file of addons
-	TemplateName = "template.yaml"
+	// InitializerTemplateName represents the Initializer template file of addons
+	InitializerTemplateName = "template.yaml"
 
-	// ApplicationFileDir is where we store generated application & component definition
-	ApplicationFileDir = "auto-gen"
+	// InitializerFileDir is where we store generated initializer & component definition
+	InitializerFileDir = "auto-gen"
 
 	// ComponentDefDir is where we store correspond componentDefinition for addon
 	ComponentDefDir = "definitions"
@@ -64,7 +64,7 @@ const (
 	// ChartTemplateNamespace is placeholder for helm chart
 	ChartTemplateNamespace = "{{.Values.systemDefinitionNamespace}}"
 
-	// NameAnnotation marked the addon's name if exist, or application's name
+	// NameAnnotation marked the addon's name if exist, or initializer's name
 	NameAnnotation = "addons.oam.dev/name"
 )
 
@@ -96,7 +96,7 @@ func walkAllAddons(path string) ([]string, error) {
 
 	addons := make([]string, 0, len(files))
 	for _, file := range files {
-		if file.IsDir() && file.Name() != ApplicationFileDir {
+		if file.IsDir() && file.Name() != InitializerFileDir {
 			addons = append(addons, file.Name())
 		}
 	}
@@ -141,7 +141,7 @@ func getAddonInfo(addon string, addonsPath string) (*AddonInfo, error) {
 	resourcesFiles := make([]velaFile, 0)
 	defFiles := make([]velaFile, 0)
 	addInfo := &AddonInfo{
-		TemplatePath: filepath.Join(addonRoot, TemplateName),
+		TemplatePath: filepath.Join(addonRoot, InitializerTemplateName),
 	}
 	// raw resources directory
 	if pathExist(resourceRoot) {
@@ -180,7 +180,7 @@ func WriteToFile(filename string, data string) error {
 	return file.Sync()
 }
 
-func generateApplication(addon *AddonInfo) (*v1beta1.Application, error) {
+func generateInitializer(addon *AddonInfo) (*v1beta1.Initializer, error) {
 	templatePath := strings.Split(addon.TemplatePath, "/")
 	templateName := templatePath[len(templatePath)-1]
 	t, err := template.New(templateName).Funcs(sprig.TxtFuncMap()).ParseFiles(addon.TemplatePath)
@@ -190,16 +190,15 @@ func generateApplication(addon *AddonInfo) (*v1beta1.Application, error) {
 	var buf bytes.Buffer
 	err = t.Execute(&buf, addon)
 	if err != nil {
-		fmt.Println(err)
-		return nil, errors.Wrapf(err, "generate Application %s fail", addon.TemplatePath)
+		return nil, errors.Wrapf(err, "generate Initializer %s fail", addon.TemplatePath)
 	}
 
-	app := new(v1beta1.Application)
-	err = yaml.Unmarshal(buf.Bytes(), app)
+	init := new(v1beta1.Initializer)
+	err = yaml.Unmarshal(buf.Bytes(), init)
 	if err != nil {
 		return nil, err
 	}
-	return app, err
+	return init, err
 }
 
 func setConfigMapLabels(addonInfo *AddonInfo) map[string]string {
@@ -213,8 +212,7 @@ func setConfigMapAnnotations(addonInfo *AddonInfo) map[string]string {
 		DescAnnotation: addonInfo.Description,
 	}
 }
-
-func removeUselessInplace(s *string) {
+func removeTimestampInplace(s *string) {
 	timeStampwithApptemplate := "appTemplate:\n(.*metadata:)?\n[ ]*creationTimestamp: null"
 	re := regexp.MustCompile(timeStampwithApptemplate)
 	*s = re.ReplaceAllString(*s, "appTemplate:")
@@ -222,65 +220,61 @@ func removeUselessInplace(s *string) {
 	pureTimeStamp := "\n[ ]*creationTimestamp: null"
 	re = regexp.MustCompile(pureTimeStamp)
 	*s = re.ReplaceAllString(*s, "")
-
-	nullProperties := "\n[ ]*properties: null"
-	re = regexp.MustCompile(nullProperties)
-	*s = re.ReplaceAllString(*s, "")
 }
 
 // storeConfigMap store configMap in helm chart
-func storeConfigMap(addonInfo *AddonInfo, application *v1beta1.Application, storePath string) error {
+func storeConfigMap(addonInfo *AddonInfo, initializer *v1beta1.Initializer, storePath string) error {
 	configMap := &corev1.ConfigMap{
 		TypeMeta: v1.TypeMeta{
 			APIVersion: "v1",
 			Kind:       "ConfigMap",
 		},
 	}
-	addonInfo.Description = application.GetAnnotations()[DescAnnotation]
+	addonInfo.Description = initializer.GetAnnotations()[DescAnnotation]
 	configMap.SetName(addonInfo.StoreName)
 	configMap.SetNamespace(ChartTemplateNamespace)
 	configMap.SetAnnotations(setConfigMapAnnotations(addonInfo))
 	configMap.SetLabels(setConfigMapLabels(addonInfo))
 
 	data := make(map[string]string, 1)
-	initContent, err := yaml.Marshal(application)
+	initContent, err := yaml.Marshal(initializer)
 	if err != nil {
 		return err
 	}
-	data["application"] = string(initContent)
+	data["initializer"] = string(initContent)
 	configMap.Data = data
 	content, err := yaml.Marshal(configMap)
 	if err != nil {
 		return err
 	}
 	raw := string(content)
-	removeUselessInplace(&raw)
+	removeTimestampInplace(&raw)
 	raw = strings.ReplaceAll(raw, fmt.Sprintf("'%s'", ChartTemplateNamespace), ChartTemplateNamespace)
 	filename := storePath + "/" + addonInfo.StoreName + ".yaml"
 	return WriteToFile(filename, raw)
 }
 
-// storeApplication store app in one file for apply directly
-func storeApplication(app *v1beta1.Application, addonPath string, addonName string) error {
-	initContent, err := yaml.Marshal(app)
+// storeInitializer store init in one file for apply directly
+func storeInitializer(init *v1beta1.Initializer, addonPath string, addonName string) error {
+	initContent, err := yaml.Marshal(init)
 	if err != nil {
 		return err
 	}
 
-	filename := path.Join(addonPath, ApplicationFileDir, addonName+".yaml")
+	filename := path.Join(addonPath, InitializerFileDir, addonName+".yaml")
 	contents := string(initContent)
-	removeUselessInplace(&contents)
+	removeTimestampInplace(&contents)
 	return WriteToFile(filename, contents)
 }
 
-func storeDefaultAddon(app *v1beta1.Application, storePath, addonName string) error {
-	app.SetNamespace(ChartTemplateNamespace)
+func storeDefaultAddon(init *v1beta1.Initializer, storePath, addonName string) error {
+	init.SetNamespace(ChartTemplateNamespace)
 
-	app.SetAnnotations(util.MergeMapOverrideWithDst(app.Annotations, map[string]string{
+	init.SetAnnotations(util.MergeMapOverrideWithDst(init.Annotations, map[string]string{
 		"helm.sh/hook": "post-install, post-upgrade, pre-delete",
 	}))
 
-	initContent, err := yaml.Marshal(app)
+	initContent, err := yaml.Marshal(init)
 	if err != nil {
 		return err
 	}
@@ -288,10 +282,9 @@ func storeDefaultAddon(app *v1beta1.Application, storePath, addonName string) er
 	filename := path.Join(storePath, addonName+".yaml")
 	raw := string(initContent)
 	raw = strings.ReplaceAll(raw, fmt.Sprintf("'%s'", ChartTemplateNamespace), ChartTemplateNamespace)
-	removeUselessInplace(&raw)
+	removeTimestampInplace(&raw)
 	return WriteToFile(filename, raw)
 }
-
 func main() {
 	var addonsPath string
 	var configMapStorePath string
@@ -299,12 +292,12 @@ func main() {
 
 	flag.StringVar(&addonsPath, "addons-path", "./vela-templates/addons", "addons path")
 	flag.StringVar(&configMapStorePath, "store-path", "./charts/vela-core/templates/addons", "path store configMap")
-	flag.StringVar(&initStorePath, "app-path", "./charts/vela-core/templates/addons-default", "path to store default addon")
+	flag.StringVar(&initStorePath, "init-path", "./charts/vela-core/templates/addons-default", "path to store default addon")
 
 	addons, err := walkAllAddons(addonsPath)
 	dealErr := func(addonName string, err error) {
 		if err != nil {
-			fmt.Printf("%s gen_addon err:%+v", addonName, err)
+			fmt.Printf("%s gen_addon err:%e", addonName, err)
 			os.Exit(1)
 		}
 	}
@@ -315,26 +308,26 @@ func main() {
 	for _, addon := range addons {
 		addInfo, err := getAddonInfo(addon, addonsPath)
 		dealErr(addon, err)
-		app, err := generateApplication(addInfo)
+		init, err := generateInitializer(addInfo)
 		dealErr(addon, err)
-		setAddonName(addInfo, app)
-		err = storeApplication(app, addonsPath, addInfo.StoreName)
+		setAddonName(addInfo, init)
+		err = storeInitializer(init, addonsPath, addInfo.StoreName)
 		dealErr(addon, err)
-		err = storeConfigMap(addInfo, app, configMapStorePath)
+		err = storeConfigMap(addInfo, init, configMapStorePath)
 		dealErr(addon, err)
 		if slices.Contains(DefaultEnableAddons, addon) {
-			err = storeDefaultAddon(app, initStorePath, addon)
+			err = storeDefaultAddon(init, initStorePath, addon)
 			dealErr(addon, err)
 		}
 	}
 }
 
-func setAddonName(addInfo *AddonInfo, app *v1beta1.Application) {
+func setAddonName(addInfo *AddonInfo, init *v1beta1.Initializer) {
 	var name string
-	if val, ok := app.Annotations[NameAnnotation]; ok {
+	if val, ok := init.Annotations[NameAnnotation]; ok {
 		name = val
 	} else {
-		name = app.Name
+		name = init.Name
 	}
 	addInfo.Name = name
 	addInfo.StoreName = cli.TransAddonName(name)
