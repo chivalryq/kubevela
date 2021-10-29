@@ -44,7 +44,7 @@ func (a *Args) SetConfig() error {
 	if err != nil {
 		return err
 	}
-	restConf.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(100, 200)
+	restConf.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(defaultClientQPS, defaultClientBurst)
 	a.Config = restConf
 	return nil
 }

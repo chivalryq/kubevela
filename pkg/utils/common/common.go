@@ -78,6 +78,11 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+const (
+	defaultClientQPS   = 100
+	defaultClientBurst = 200
+)
+
 // InitBaseRestConfig will return reset config for create controller runtime client
 func InitBaseRestConfig() (Args, error) {
 	restConf, err := config.GetConfig()
@@ -87,7 +92,7 @@ func InitBaseRestConfig() (Args, error) {
 	} else if err != nil {
 		return Args{}, err
 	}
-	restConf.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(100, 200)
+	restConf.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(defaultClientQPS, defaultClientBurst)
 	return Args{
 		Config: restConf,
 		Schema: Scheme,
