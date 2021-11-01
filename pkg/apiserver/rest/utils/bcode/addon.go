@@ -25,7 +25,9 @@ var (
 	ErrAddonRegistryExist = NewBcode(400, 50002, "addon name already exists")
 
 	// ErrAddonRenderFail fail to render addon application
-	ErrAddonRenderFail = NewBcode(500, 50010, "addon render fail")
+	ErrAddonRenderFail = func(err error) error {
+		return NewBcode(500, 50010, "addon render fail, err:"+err.Error())
+	}
 
 	// ErrAddonApplyFail fail to apply application to cluster
 	ErrAddonApplyFail = NewBcode(500, 50011, "fail to apply addon application")

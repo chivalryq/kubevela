@@ -267,18 +267,18 @@ func renderAddonApp(data string, args *apis.EnableAddonRequest) (*unstructured.U
 
 	t, err := template.New("addon-template").Delims("[[", "]]").Funcs(sprig.TxtFuncMap()).Parse(data)
 	if err != nil {
-		return nil, bcode.ErrAddonRenderFail
+		return nil, bcode.ErrAddonRenderFail(err)
 	}
 	buf := bytes.Buffer{}
 	err = t.Execute(&buf, args)
 	if err != nil {
-		return nil, bcode.ErrAddonRenderFail
+		return nil, bcode.ErrAddonRenderFail(err)
 	}
 	dec := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
 	obj := &unstructured.Unstructured{}
 	_, _, err = dec.Decode(buf.Bytes(), nil, obj)
 	if err != nil {
-		return nil, bcode.ErrAddonRenderFail
+		return nil, bcode.ErrAddonRenderFail(err)
 	}
 	return obj, nil
 }
