@@ -311,7 +311,7 @@ var (
 
 func TestGenAllDef(t *testing.T) {
 	skipDefs := []string{
-		// non-concrete structs like
+		// non-concrete Structs like
 		// foo: string|{secretRef: string}
 		"container-image.cue",
 		"export2config.cue",

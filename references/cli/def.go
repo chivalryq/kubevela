@@ -1064,11 +1064,7 @@ func NewDefinitionValidateCommand(c common.Args) *cobra.Command {
 
 // NewDefinitionGenAPICommand create the `vela def gen-api` command to help user generate Go code from the definition
 func NewDefinitionGenAPICommand(c common.Args) *cobra.Command {
-	var (
-		skipPackageName bool
-		packageName     string
-		prefix          string
-	)
+	genOption := pkgdef.GenOption{}
 
 	cmd := &cobra.Command{
 		Use:   "gen-api DEFINITION.cue",
@@ -1104,21 +1100,18 @@ func NewDefinitionGenAPICommand(c common.Args) *cobra.Command {
 				return err
 			}
 
-			pkgdef.DefaultNamer.SetPrefix(prefix)
-			structs, err := pkgdef.GeneratorParameterStructs(value)
+			pkgdef.DefaultNamer.SetPrefix(genOption.Prefix)
+			generator := pkgdef.Generator{Name: def.GetName(), Kind: def.GetKind()}
+			err = generator.Run(value, genOption)
 			if err != nil {
 				return errors.Wrapf(err, "failed to generate Go code")
 			}
-
-			if !skipPackageName {
-				fmt.Printf("package %s\n\n", packageName)
-			}
-			pkgdef.PrintParamGosStruct(structs)
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&skipPackageName, "skip-package-name", false, "Skip package name in generated Go code.")
-	cmd.Flags().StringVar(&packageName, "package-name", "main", "Specify the package name in generated Go code.")
-	cmd.Flags().StringVar(&prefix, "prefix", "", "Specify the prefix of the generated Go struct.")
+	cmd.Flags().BoolVar(&genOption.SkipPackageName, "skip-package-name", false, "Skip package name in generated Go code.")
+	cmd.Flags().StringVar(&genOption.PackageName, "package-name", "main", "Specify the package name in generated Go code.")
+	cmd.Flags().StringVar(&genOption.Prefix, "prefix", "", "Specify the prefix of the generated Go struct.")
+	cmd.Flags().StringVarP(&genOption.OutputFile, "output", "o", "", "Specify the output file path.")
 	return cmd
 }

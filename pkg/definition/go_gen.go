@@ -20,6 +20,8 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
+	"io"
+	"os"
 	"strings"
 	"unicode"
 
@@ -29,6 +31,13 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/types"
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
+)
+
+const (
+	componentType    = "Component"
+	traitType        = "Trait"
+	workflowStepType = "WorkflowStep"
+	policyType       = "Policy"
 )
 
 // StructParameter is a parameter that can be printed as a struct.
@@ -41,10 +50,21 @@ type StructParameter struct {
 
 // Field is a field of a struct.
 type Field struct {
-	Name string
+	Name    string
+	JsonTag string
 	// GoType is the same to parameter.Type but can be print in Go
 	GoType    string
 	OmitEmpty bool
+	Param     *StructParameter
+	Usage     string
+}
+
+type GenOption struct {
+	SkipPackageName bool
+	PackageName     string
+	Prefix          string
+	InputFile       string
+	OutputFile      string
 }
 
 //nolint:gochecknoglobals
@@ -82,13 +102,37 @@ func NewFieldNamer(prefix string) FieldNamer {
 	return &AbbrFieldNamer{Prefix: prefix, Abbreviations: WellKnownAbbreviations}
 }
 
-var structs []StructParameter
+type Generator struct {
+	// Name of component/trait/policy/workflow-step
+	Name string
+	// Kind can be "ComponentDefinition", "TraitDefinition", "PolicyDefinition", "WorkflowStepDefinition"
+	Kind    string
+	Structs []StructParameter
+
+	// names that will be used to generate go code
+	specName        string
+	structName      string
+	constructorName string
+	receiverName    string
+	typeVarName     string
+}
+
+// Run generates go code from cue file and print it.
+func (g *Generator) Run(param cue.Value, option GenOption) error {
+	err := g.GeneratorParameterStructs(param)
+	if err != nil {
+		return err
+	}
+
+	g.PrintDefinitions(option)
+	return nil
+}
 
 // GeneratorParameterStructs generates structs for parameters in cue.
-func GeneratorParameterStructs(param cue.Value) ([]StructParameter, error) {
-	structs = []StructParameter{}
-	err := parseParameters(param, "Parameter")
-	return structs, err
+func (g *Generator) GeneratorParameterStructs(param cue.Value) error {
+	g.Structs = []StructParameter{}
+	_, err := g.parseParameters(param, specName(g.Name))
+	return err
 }
 
 // NewStructParameter creates a StructParameter
@@ -102,7 +146,7 @@ func NewStructParameter() StructParameter {
 
 // parseParameters will be called recursively to parse parameters
 // nolint:staticcheck
-func parseParameters(paraValue cue.Value, paramKey string) error {
+func (g *Generator) parseParameters(paraValue cue.Value, paramKey string) (*StructParameter, error) {
 	param := NewStructParameter()
 	param.Name = paramKey
 	param.Type = paraValue.IncompleteKind()
@@ -115,7 +159,7 @@ func parseParameters(paraValue cue.Value, paramKey string) error {
 	if param.Type == cue.StructKind {
 		arguments, err := paraValue.Struct()
 		if err != nil {
-			return fmt.Errorf("augument not as struct: %w", err)
+			return nil, fmt.Errorf("augument not as struct: %w", err)
 		}
 		if arguments.Len() == 0 { // in cue, empty struct like: foo: map[string]int
 			tl := paraValue.Template()
@@ -123,61 +167,69 @@ func parseParameters(paraValue cue.Value, paramKey string) error {
 				// TODO: kind maybe not simple type like string/int, if it is a struct, parseParameters should be called
 				kind, err := trimIncompleteKind(tl("").IncompleteKind().String())
 				if err != nil {
-					return errors.Wrap(err, "invalid parameter kind")
+					return nil, errors.Wrap(err, "invalid parameter kind")
 				}
 				param.GoType = fmt.Sprintf("map[string]%s", kind)
 			}
 		}
 		for i := 0; i < arguments.Len(); i++ {
-			var subParam Field
+			var field Field
 			fi := arguments.Field(i)
 			if fi.IsDefinition {
 				continue
 			}
 			val := fi.Value
-			name := fi.Name
-			subParam.Name = name
-			subParam.OmitEmpty = fi.IsOptional
+			name := fi.Selector
+			field.Name = DefaultNamer.FieldName(name)
+			field.JsonTag = name
+			field.OmitEmpty = fi.IsOptional
 			switch val.IncompleteKind() {
 			case cue.StructKind:
 				if subField, err := val.Struct(); err == nil && subField.Len() == 0 { // err cannot be not nil,so ignore it
 					if mapValue, ok := val.Elem(); ok {
 						// In the future we could recursively call to support complex map-value(struct or list)
-						subParam.GoType = fmt.Sprintf("map[string]%s", mapValue.IncompleteKind().String())
+						field.GoType = fmt.Sprintf("map[string]%s", mapValue.IncompleteKind().String())
 					} else {
 						// element in struct not defined, use interface{}
-						subParam.GoType = "map[string]interface{}"
+						field.GoType = "map[string]interface{}"
 					}
 				} else {
-					if err := parseParameters(val, name); err != nil {
-						return err
+					subParam, err := g.parseParameters(val, name)
+					if err != nil {
+						return nil, err
 					}
-					subParam.GoType = DefaultNamer.FieldName(name)
+					field.GoType = DefaultNamer.FieldName(name)
+					field.Param = subParam
 				}
 			case cue.ListKind:
 				elem, success := val.Elem()
 				if !success {
 					// fail to get elements, use the value of ListKind to be the type
-					subParam.GoType = val.IncompleteKind().String()
+					field.GoType = normalizeGoType(val.IncompleteKind().String())
 					break
 				}
 				switch elem.Kind() {
 				case cue.StructKind:
-					subParam.GoType = fmt.Sprintf("[]%s", DefaultNamer.FieldName(name))
-					if err := parseParameters(elem, name); err != nil {
-						return err
+					subParam, err := g.parseParameters(elem, name)
+					if err != nil {
+						return nil, err
 					}
+					field.GoType = fmt.Sprintf("[]%s", DefaultNamer.FieldName(name))
+					field.Param = subParam
 				default:
-					subParam.GoType = fmt.Sprintf("[]%s", elem.IncompleteKind().String())
+					field.GoType = fmt.Sprintf("[]%s", elem.IncompleteKind().String())
 				}
 			default:
-				subParam.GoType = val.IncompleteKind().String()
+				// todo
+				_, usage, _, _ := velacue.RetrieveComments(val)
+				field.GoType = normalizeGoType(val.IncompleteKind().String())
+				field.Usage = usage
 			}
-			param.Fields = append(param.Fields, subParam)
+			param.Fields = append(param.Fields, field)
 		}
 	}
-	structs = append(structs, param)
-	return nil
+	g.Structs = append(g.Structs, param)
+	return &param, nil
 }
 
 // GenGoCodeFromParams generates go code from parameters
@@ -199,35 +251,249 @@ func GenGoCodeFromParams(parameters []StructParameter) (string, error) {
 	return string(source), nil
 }
 
-// PrintParamGosStruct prints the StructParameter in Golang struct format
-func PrintParamGosStruct(parameters []StructParameter) {
-	code, err := GenGoCodeFromParams(parameters)
-	if err != nil {
-		fmt.Println("Fail to gen code, err:", err)
-	}
-	fmt.Print(code)
+type PrintStep func(w io.Writer, option GenOption)
+
+func (g *Generator) printBoilerplate(w io.Writer, option GenOption) {
+	fmt.Fprintf(w, `
+/*
+Copyright 2023 The KubeVela Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+`)
+	fmt.Fprintf(w, "// Code generated from %s using `vela def gen-api`. DO NOT EDIT.\n", option.InputFile)
+	fmt.Fprintf(w, "\n")
 }
 
-func genField(param StructParameter, buffer *bytes.Buffer) {
+func (g *Generator) printPackage(w io.Writer, option GenOption) {
+	if !option.SkipPackageName {
+		fmt.Fprintf(w, "package %s\n", option.PackageName)
+	}
+}
+
+func (g *Generator) printImports(w io.Writer, _ GenOption) {
+	fmt.Fprintf(w, `import (
+	"github.com/oam-dev/kubevela-core-api/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela-core-api/pkg/oam/util"
+	. "vela-go-sdk/api"
+)
+`)
+}
+
+func (g *Generator) printTypeVar(w io.Writer, _ GenOption) {
+	fmt.Fprintf(w, `
+const %s = "%s"
+`, g.typeVarName, g.Name)
+}
+
+func (g *Generator) printRootStruct(w io.Writer, _ GenOption) {
+	kind := normalizeKind(g.Kind)
+	fmt.Fprintf(w, `// %s is the root struct of %s
+type %s struct {
+    Base %sBase
+    Props %s
+}
+`, g.structName, g.Name, g.structName, kind, g.specName)
+}
+
+func (g *Generator) printPropertiesStructs(w io.Writer, _ GenOption) {
+	for _, parameter := range g.Structs {
+		if parameter.Usage == "" {
+			parameter.Usage = "-"
+		}
+		fmt.Fprintf(w, "// %s %s\n", DefaultNamer.FieldName(parameter.Name), parameter.Usage)
+		genField(parameter, w)
+	}
+}
+
+func (g *Generator) printConstructorFunc(w io.Writer, _ GenOption) {
+	defType := normalizeKind(g.Kind)
+	switch defType {
+	case componentType:
+		fmt.Fprintf(w, `
+func %s(name string) *%s {
+    %s := %s{
+        Base: %sBase{
+            Name: name,
+        },
+    }
+    return &%s
+}
+`, g.constructorName, g.structName, g.Name, g.structName, defType, g.Name)
+	case traitType:
+		fmt.Fprintf(w, `
+func %s() *%s {
+    %s := %s{
+        Base: %sBase{},
+    }
+    return &%s
+}
+`, g.constructorName, g.structName, g.Name, g.structName, defType, g.Name)
+	}
+
+}
+
+func (g *Generator) printTraitFunc(w io.Writer, _ GenOption) {
+	if g.Kind != "ComponentDefinition" {
+		return
+	}
+	fmt.Fprintf(w, `
+%s Trait(traits ...Trait) *%s {
+    %s.Base.Traits = append(%s.Base.Traits, traits...)
+    return %s
+}
+`, g.funcReceiver(), g.structName, g.receiverName, g.receiverName, g.receiverName)
+}
+
+func (g *Generator) printBuildFunc(w io.Writer, option GenOption) {
+	switch g.Kind {
+	case "ComponentDefinition":
+		g.printBuildFuncForComponent(w, option)
+	case "TraitDefinition":
+		g.printBuildFuncForTrait(w, option)
+	case "PolicyDefinition":
+		//g.printBuildFuncForPolicy(w,option)
+	case "WorkflowStepDefinition":
+		//g.printBuildFuncForWorkflowStep(w,option)
+	}
+}
+
+func (g *Generator) printBuildFuncForComponent(w io.Writer, _ GenOption) {
+	fmt.Fprintf(w, `
+%s Build() common.ApplicationComponent {
+    traits := make([]common.ApplicationTrait, 0)
+    for _, trait := range %s.Base.Traits {
+    	traits = append(traits, trait.Build())
+    }
+    comp := common.ApplicationComponent{
+    	Name:       %s.Base.Name,
+    	Type:       %s,
+    	Properties: util.Object2RawExtension(%s.Props),
+    	DependsOn:  %s.Base.DependsOn,
+    	Inputs:     %s.Base.Inputs,
+    	Outputs:    %s.Base.Outputs,
+    	Traits:     traits,
+    }
+    return comp
+}
+`, g.funcReceiver(), g.receiverName, g.receiverName, g.typeVarName, g.receiverName, g.receiverName, g.receiverName, g.receiverName)
+}
+
+func (g *Generator) printBuildFuncForTrait(w io.Writer, _ GenOption) {
+	fmt.Fprintf(w, `
+%s Build() common.ApplicationTrait {
+    trait := common.ApplicationTrait {
+        Type:       %s,
+        Properties: util.Object2RawExtension(%s.Props),
+    }
+    return trait
+}
+`, g.funcReceiver(), g.typeVarName, g.receiverName)
+}
+
+func (g *Generator) printPropertiesFunc(w io.Writer, _ GenOption) {
+	var topLevelFields []Field
+	for _, parameter := range g.Structs {
+		if parameter.Name == g.specName {
+			topLevelFields = parameter.Fields
+		}
+	}
+
+	for _, field := range topLevelFields {
+		var usage string
+		if field.Param != nil {
+			usage = field.Param.Usage
+		}
+		if usage == "" {
+			usage = "-"
+		}
+		fmt.Fprintf(w, "// %s %s\n", field.Name, usage)
+		fmt.Fprintf(w, `%s %s(value %s) *%s {
+    %s.Props.%s = value
+    return %s
+}
+`, g.funcReceiver(), field.Name, field.GoType, g.structName, g.receiverName, field.Name, g.receiverName)
+	}
+}
+
+func (g *Generator) funcReceiver() string {
+	return fmt.Sprintf("func (%s *%s)", g.receiverName, g.structName)
+}
+
+// PrintDefinitions prints the StructParameter in Golang struct format
+func (g *Generator) PrintDefinitions(option GenOption) {
+	g.initNames()
+	writer := os.Stdout
+	if option.OutputFile != "" {
+		file, err := os.Create(option.OutputFile)
+		if err != nil {
+			panic(err)
+		}
+		writer = file
+	}
+
+	buf := &bytes.Buffer{}
+	steps := []PrintStep{
+		g.printBoilerplate,
+		g.printPackage,
+		g.printImports,
+		g.printTypeVar,
+		g.printRootStruct,
+		g.printPropertiesStructs,
+		g.printConstructorFunc,
+		g.printTraitFunc,
+		g.printBuildFunc,
+		g.printPropertiesFunc,
+	}
+	for _, step := range steps {
+		step(buf, option)
+	}
+
+	source, err := format.Source(buf.Bytes())
+	if err != nil {
+		fmt.Println("Failed to format source:", err)
+	}
+	_, _ = writer.Write(source)
+}
+
+func (g *Generator) initNames() {
+	g.specName = specName(g.Name)
+	g.structName = structName(g.Name, g.Kind)
+	g.constructorName = constructorName(g.Name)
+	g.typeVarName = typeVarName(g.Name)
+	g.receiverName = receiverName(g.Name)
+}
+
+func genField(param StructParameter, writer io.Writer) {
 	fieldName := DefaultNamer.FieldName(param.Name)
 	if param.Type == cue.StructKind { // only struct kind will be separated struct
 		// cue struct  can be Go map or struct
 		if strings.HasPrefix(param.GoType, "map[string]") {
-			fmt.Fprintf(buffer, "type %s %s", fieldName, param.GoType)
+			fmt.Fprintf(writer, "type %s %s", fieldName, param.GoType)
 		} else {
-			fmt.Fprintf(buffer, "type %s struct {\n", fieldName)
+			fmt.Fprintf(writer, "type %s struct {\n", fieldName)
 			for _, f := range param.Fields {
-				jsonTag := f.Name
+				jsonTag := f.JsonTag
 				if f.OmitEmpty {
 					jsonTag = fmt.Sprintf("%s,omitempty", jsonTag)
 				}
-				fmt.Fprintf(buffer, "    %s %s `json:\"%s\"`\n", DefaultNamer.FieldName(f.Name), f.GoType, jsonTag)
+				fmt.Fprintf(writer, "    %s %s `json:\"%s\"`\n", f.Name, f.GoType, jsonTag)
 			}
 
-			fmt.Fprintf(buffer, "}\n")
+			fmt.Fprintf(writer, "}\n")
 		}
 	} else {
-		fmt.Fprintf(buffer, "type %s %s\n", fieldName, param.GoType)
+		fmt.Fprintf(writer, "type %s %s\n", fieldName, param.GoType)
 	}
 }
 
@@ -309,4 +575,34 @@ func SplitComponents(name string) []string {
 	default:
 		return camelcase.Split(name)
 	}
+}
+
+func specName(definitionName string) string {
+	return DefaultNamer.FieldName(definitionName + "Spec")
+}
+
+func constructorName(definitionName string) string {
+	return DefaultNamer.FieldName(definitionName)
+}
+func structName(definitionName, definitionKind string) string {
+	return DefaultNamer.FieldName(definitionName) + normalizeKind(definitionKind)
+}
+
+func typeVarName(definitionName string) string {
+	return definitionName + "Type"
+}
+
+func receiverName(definitionName string) string {
+	return definitionName[:1]
+}
+
+func normalizeKind(definitionKind string) string {
+	return strings.TrimSuffix(definitionKind, "Definition")
+}
+
+func normalizeGoType(goType string) string {
+	if goType == "number" {
+		return "float64"
+	}
+	return goType
 }
