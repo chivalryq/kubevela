@@ -19,9 +19,12 @@ package definition
 import (
 	"bytes"
 	"fmt"
+	"github.com/kubevela/workflow/pkg/cue/model/value"
+	"github.com/kubevela/workflow/pkg/cue/packages"
 	"go/format"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"unicode"
 
@@ -46,6 +49,10 @@ type StructParameter struct {
 	// GoType is the same to parameter.Type but can be print in Go
 	GoType string
 	Fields []Field
+	// ReversedPaths is the path to this parameter which the order is reversed. It could be used to solve the problem of name conflict.
+	ReversedPaths []string
+	// the index of the path that is a pointer
+	PathPtr int
 }
 
 // Field is a field of a struct.
@@ -57,6 +64,13 @@ type Field struct {
 	OmitEmpty bool
 	Param     *StructParameter
 	Usage     string
+}
+
+func (f Field) GetGoType() string {
+	if f.Param != nil {
+		return f.Param.GoType
+	}
+	return f.GoType
 }
 
 type GenOption struct {
@@ -86,6 +100,7 @@ var (
 
 		"CPU": true,
 		"PVC": true,
+		"IP":  true,
 	}
 
 	DefaultNamer = NewFieldNamer("")
@@ -107,7 +122,10 @@ type Generator struct {
 	Name string
 	// Kind can be "ComponentDefinition", "TraitDefinition", "PolicyDefinition", "WorkflowStepDefinition"
 	Kind    string
-	Structs []StructParameter
+	Structs map[string]*StructParameter
+
+	// reversedPaths is the reversed path now generator locates when traversing the cue value.
+	reversedPaths []string
 
 	// names that will be used to generate go code
 	specName        string
@@ -118,38 +136,91 @@ type Generator struct {
 }
 
 // Run generates go code from cue file and print it.
-func (g *Generator) Run(param cue.Value, option GenOption) error {
-	err := g.GeneratorParameterStructs(param)
+func (g *Generator) Run(template string, option GenOption, pd *packages.PackageDiscover) error {
+	g.initNames()
+	values, err := getNecessaryValues(template, pd)
+	if err != nil {
+		return err
+	}
+	err = g.GenerateParameterStructs(values)
 	if err != nil {
 		return err
 	}
 
-	g.PrintDefinitions(option)
+	return g.PrintDefinitions(option)
 	return nil
 }
 
-// GeneratorParameterStructs generates structs for parameters in cue.
-func (g *Generator) GeneratorParameterStructs(param cue.Value) error {
-	g.Structs = []StructParameter{}
-	_, err := g.parseParameters(param, specName(g.Name))
-	return err
+// GenerateParameterStructs generates structs for parameters in cue.
+func (g *Generator) GenerateParameterStructs(vals []cue.Value) error {
+	g.Structs = make(map[string]*StructParameter)
+	// todo #HealthProbe is not in paramter value, select definition and add it to parse process.
+	for _, v := range vals {
+		l, ok := v.Label()
+		if !ok {
+			return errors.New("get label failed")
+		}
+		switch {
+		case l == "parameter":
+			_, err := g.parseParameters(v, g.specName)
+			if err != nil {
+				return errors.Wrap(err, "parse parameters")
+			}
+		case strings.HasPrefix(l, "#"):
+			_, err := g.parseParameters(v, strings.TrimPrefix(l, "#"))
+			if err != nil {
+				return errors.Wrap(err, "parse definition")
+			}
+		}
+	}
+	return nil
+}
+
+func getNecessaryValues(template string, pd *packages.PackageDiscover) ([]cue.Value, error) {
+	tmpl, err := value.NewValue(template+velacue.BaseTemplate, pd, "")
+	if err != nil {
+		return []cue.Value{}, err
+	}
+	// We need the parameter field and all field that is definition
+	iter, err := tmpl.CueValue().Fields(cue.All())
+	if err != nil {
+		return []cue.Value{}, errors.Wrap(err, "iterate fields")
+	}
+	var values []cue.Value
+	for iter.Next() {
+		if iter.Label() == "parameter" {
+			values = append(values, iter.Value())
+		}
+		if strings.HasPrefix(iter.Label(), "#") {
+			values = append(values, iter.Value())
+		}
+	}
+	return values, nil
 }
 
 // NewStructParameter creates a StructParameter
-func NewStructParameter() StructParameter {
+func NewStructParameter(paths []string) StructParameter {
+	copiedPaths := make([]string, len(paths))
+	copy(copiedPaths, paths)
 	return StructParameter{
-		Parameter: types.Parameter{},
-		GoType:    "",
-		Fields:    []Field{},
+		Parameter:     types.Parameter{},
+		GoType:        "",
+		Fields:        []Field{},
+		PathPtr:       0,
+		ReversedPaths: copiedPaths,
 	}
 }
 
 // parseParameters will be called recursively to parse parameters
 // nolint:staticcheck
 func (g *Generator) parseParameters(paraValue cue.Value, paramKey string) (*StructParameter, error) {
-	param := NewStructParameter()
+
+	g.reversedPaths = append([]string{paramKey}, g.reversedPaths...)
+
+	param := NewStructParameter(g.reversedPaths)
 	param.Name = paramKey
 	param.Type = paraValue.IncompleteKind()
+	param.GoType = DefaultNamer.FieldName(paramKey)
 	param.Short, param.Usage, param.Alias, param.Ignore = velacue.RetrieveComments(paraValue)
 	if def, ok := paraValue.Default(); ok && def.IsConcrete() {
 		param.Default = velacue.GetDefault(def)
@@ -157,32 +228,24 @@ func (g *Generator) parseParameters(paraValue cue.Value, paramKey string) (*Stru
 
 	// only StructKind will be separated go struct, other will be just a field
 	if param.Type == cue.StructKind {
-		arguments, err := paraValue.Struct()
+		fi, err := paraValue.Fields(cue.All())
 		if err != nil {
 			return nil, fmt.Errorf("augument not as struct: %w", err)
 		}
-		if arguments.Len() == 0 { // in cue, empty struct like: foo: map[string]int
-			tl := paraValue.Template()
-			if tl != nil { // map type
-				// TODO: kind maybe not simple type like string/int, if it is a struct, parseParameters should be called
-				kind, err := trimIncompleteKind(tl("").IncompleteKind().String())
-				if err != nil {
-					return nil, errors.Wrap(err, "invalid parameter kind")
-				}
-				param.GoType = fmt.Sprintf("map[string]%s", kind)
-			}
-		}
-		for i := 0; i < arguments.Len(); i++ {
-			var field Field
-			fi := arguments.Field(i)
-			if fi.IsDefinition {
+		zeroFlag := true
+		for fi.Next() {
+			if fi.Selector().IsDefinition() {
 				continue
 			}
-			val := fi.Value
-			name := fi.Selector
+			zeroFlag = false
+			var field Field
+			val := fi.Value()
+			name := fi.Selector().String()
+			_, usage, _, _ := velacue.RetrieveComments(val)
 			field.Name = DefaultNamer.FieldName(name)
 			field.JsonTag = name
-			field.OmitEmpty = fi.IsOptional
+			field.OmitEmpty = fi.IsOptional()
+			field.Usage = usage
 			switch val.IncompleteKind() {
 			case cue.StructKind:
 				if subField, err := val.Struct(); err == nil && subField.Len() == 0 { // err cannot be not nil,so ignore it
@@ -194,12 +257,18 @@ func (g *Generator) parseParameters(paraValue cue.Value, paramKey string) (*Stru
 						field.GoType = "map[string]interface{}"
 					}
 				} else {
-					subParam, err := g.parseParameters(val, name)
-					if err != nil {
-						return nil, err
+					_, p := val.ReferencePath()
+					sels := p.Selectors()
+					if sels != nil {
+						// Reference to a struct definition
+						field.GoType = strings.TrimPrefix(sels[len(sels)-1].String(), "#")
+					} else {
+						subParam, err := g.parseParameters(val, name)
+						if err != nil {
+							return nil, err
+						}
+						field.Param = subParam
 					}
-					field.GoType = DefaultNamer.FieldName(name)
-					field.Param = subParam
 				}
 			case cue.ListKind:
 				elem, success := val.Elem()
@@ -214,22 +283,86 @@ func (g *Generator) parseParameters(paraValue cue.Value, paramKey string) (*Stru
 					if err != nil {
 						return nil, err
 					}
-					field.GoType = fmt.Sprintf("[]%s", DefaultNamer.FieldName(name))
 					field.Param = subParam
 				default:
 					field.GoType = fmt.Sprintf("[]%s", elem.IncompleteKind().String())
 				}
 			default:
-				// todo
-				_, usage, _, _ := velacue.RetrieveComments(val)
 				field.GoType = normalizeGoType(val.IncompleteKind().String())
-				field.Usage = usage
 			}
 			param.Fields = append(param.Fields, field)
 		}
+
+		if zeroFlag { // in cue, empty struct like: foo: map[string]int
+			tl := paraValue.Template()
+			if tl != nil { // map type
+				// TODO: kind maybe not simple type like string/int, if it is a struct, parseParameters should be called
+				kind, err := trimIncompleteKind(tl("").IncompleteKind().String())
+				if err != nil {
+					return nil, errors.Wrap(err, "invalid parameter kind")
+				}
+				param.GoType = fmt.Sprintf("map[string]%s", kind)
+			}
+		}
 	}
-	g.Structs = append(g.Structs, param)
+	err := g.addStructs(&param)
+	if err != nil {
+		return nil, errors.Wrap(err, "add structs")
+	}
+
+	g.reversedPaths = g.reversedPaths[1:]
+
 	return &param, nil
+}
+
+// cmpStruct is the StructParameter without StructParameter.ReversedPaths and StructParameter.PathPtr
+type cmpStruct struct {
+	types.Parameter
+	// GoType is the same to parameter.Type but can be print in Go
+	GoType string
+	Fields []Field
+}
+
+func (g *Generator) addStructs(sNew *StructParameter) error {
+	sOld, ok := g.Structs[sNew.Name]
+	if !ok {
+		g.Structs[sNew.Name] = sNew
+		return nil
+	}
+	// compare the structs except the paths
+	// If they are deep equal, just skip adding new struct
+	// Else add paths to the both struct name to distinguish them
+	if !reflect.DeepEqual(cmpStruct{
+		Parameter: sOld.Parameter,
+		GoType:    sOld.GoType,
+		Fields:    sOld.Fields,
+	}, cmpStruct{
+		Parameter: sNew.Parameter,
+		GoType:    sNew.GoType,
+		Fields:    sNew.Fields,
+	}) {
+		// if the struct is the same, add one more path to both of them
+		oldName := sOld.Name
+	AddPrefix:
+		for {
+			for _, s := range []*StructParameter{sOld, sNew} {
+				if s.PathPtr < len(s.ReversedPaths)-1 {
+					s.PathPtr++
+					s.Name = DefaultNamer.FieldName(s.ReversedPaths[s.PathPtr]) + DefaultNamer.FieldName(s.Name)
+					s.GoType = s.Name
+				} else {
+					return errors.Errorf("fail to add struct, name conflict: %s", s.Name)
+				}
+			}
+			if sOld.Name != sNew.Name {
+				g.Structs[sOld.Name] = sOld
+				g.Structs[sNew.Name] = sNew
+				break AddPrefix
+			}
+		}
+		delete(g.Structs, oldName)
+	}
+	return nil
 }
 
 // GenGoCodeFromParams generates go code from parameters
@@ -245,7 +378,7 @@ func GenGoCodeFromParams(parameters []StructParameter) (string, error) {
 	}
 	source, err := format.Source(buf.Bytes())
 	if err != nil {
-		fmt.Println("Failed to format source:", err)
+		return "", errors.Wrap(err, "format source")
 	}
 
 	return string(source), nil
@@ -312,7 +445,7 @@ func (g *Generator) printPropertiesStructs(w io.Writer, _ GenOption) {
 			parameter.Usage = "-"
 		}
 		fmt.Fprintf(w, "// %s %s\n", DefaultNamer.FieldName(parameter.Name), parameter.Usage)
-		genField(parameter, w)
+		genField(*parameter, w)
 	}
 }
 
@@ -410,10 +543,7 @@ func (g *Generator) printPropertiesFunc(w io.Writer, _ GenOption) {
 	}
 
 	for _, field := range topLevelFields {
-		var usage string
-		if field.Param != nil {
-			usage = field.Param.Usage
-		}
+		usage := field.Usage
 		if usage == "" {
 			usage = "-"
 		}
@@ -422,7 +552,7 @@ func (g *Generator) printPropertiesFunc(w io.Writer, _ GenOption) {
     %s.Props.%s = value
     return %s
 }
-`, g.funcReceiver(), field.Name, field.GoType, g.structName, g.receiverName, field.Name, g.receiverName)
+`, g.funcReceiver(), field.Name, field.GetGoType(), g.structName, g.receiverName, field.Name, g.receiverName)
 	}
 }
 
@@ -431,8 +561,7 @@ func (g *Generator) funcReceiver() string {
 }
 
 // PrintDefinitions prints the StructParameter in Golang struct format
-func (g *Generator) PrintDefinitions(option GenOption) {
-	g.initNames()
+func (g *Generator) PrintDefinitions(option GenOption) error {
 	writer := os.Stdout
 	if option.OutputFile != "" {
 		file, err := os.Create(option.OutputFile)
@@ -461,9 +590,10 @@ func (g *Generator) PrintDefinitions(option GenOption) {
 
 	source, err := format.Source(buf.Bytes())
 	if err != nil {
-		fmt.Println("Failed to format source:", err)
+		return errors.Wrap(err, "format source")
 	}
-	_, _ = writer.Write(source)
+	_, err = writer.Write(source)
+	return err
 }
 
 func (g *Generator) initNames() {
@@ -487,7 +617,7 @@ func genField(param StructParameter, writer io.Writer) {
 				if f.OmitEmpty {
 					jsonTag = fmt.Sprintf("%s,omitempty", jsonTag)
 				}
-				fmt.Fprintf(writer, "    %s %s `json:\"%s\"`\n", f.Name, f.GoType, jsonTag)
+				fmt.Fprintf(writer, "    %s %s `json:\"%s\"`\n", f.Name, f.GetGoType(), jsonTag)
 			}
 
 			fmt.Fprintf(writer, "}\n")

@@ -1095,16 +1095,12 @@ func NewDefinitionGenAPICommand(c common.Args) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			value, err := common.GetCUEParameterValue(templateString, pd)
-			if err != nil {
-				return err
-			}
 
 			pkgdef.DefaultNamer.SetPrefix(genOption.Prefix)
 			generator := pkgdef.Generator{Name: def.GetName(), Kind: def.GetKind()}
-			err = generator.Run(value, genOption)
+			err = generator.Run(templateString, genOption, pd)
 			if err != nil {
-				return errors.Wrapf(err, "failed to generate Go code")
+				return errors.Wrapf(err, "failed to generate go code for %s", def.GetName())
 			}
 			return nil
 		},

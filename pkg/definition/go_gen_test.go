@@ -137,9 +137,14 @@ func TestGeneratorParameterStructs(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
+		g := Generator{
+			Name:    "",
+			Kind:    "",
+			Structs: nil,
+		}
 		value, err := common.GetCUEParameterValue(tc.cue, nil)
 		assert.NoError(t, err)
-		actual, err := GeneratorParameterStructs(value)
+		err := g.GenerateParameterStructs(value)
 		if tc.err {
 			assert.Error(t, err)
 		} else {
