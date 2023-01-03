@@ -455,23 +455,23 @@ func (g *Generator) printConstructorFunc(w io.Writer, _ GenOption) {
 	case componentType:
 		fmt.Fprintf(w, `
 func %s(name string) *%s {
-    %s := %s{
+    comp := %s{
         Base: %sBase{
             Name: name,
         },
     }
-    return &%s
+    return &comp
 }
-`, g.constructorName, g.structName, g.Name, g.structName, defType, g.Name)
+`, g.constructorName, g.structName, g.structName, defType)
 	case traitType:
 		fmt.Fprintf(w, `
 func %s() *%s {
-    %s := %s{
+    trait := %s{
         Base: %sBase{},
     }
-    return &%s
+    return &trait
 }
-`, g.constructorName, g.structName, g.Name, g.structName, defType, g.Name)
+`, g.constructorName, g.structName, g.structName, defType)
 	}
 
 }
@@ -719,7 +719,7 @@ func structName(definitionName, definitionKind string) string {
 }
 
 func typeVarName(definitionName string) string {
-	return definitionName + "Type"
+	return DefaultNamer.FieldName(definitionName) + "Type"
 }
 
 func receiverName(definitionName string) string {
