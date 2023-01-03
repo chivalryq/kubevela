@@ -259,7 +259,12 @@ func (g *Generator) parseParameters(paraValue cue.Value, paramKey string) (*Stru
 						case cue.ListKind:
 							return nil, errors.New("map value is list not supported")
 						default:
-							field.GetGoType = goTypeFixed(fmt.Sprintf("map[string]%s", ik.String()))
+							if ik == cue.TopKind {
+								// {...} kind, can be any struct, use interface{}
+								field.GetGoType = goTypeFixed("interface{}")
+							} else {
+								field.GetGoType = goTypeFixed(fmt.Sprintf("map[string]%s", ik.String()))
+							}
 						}
 					} else {
 						// element in struct not defined, consider it as any struct.
@@ -437,13 +442,9 @@ func (g *Generator) printImports(w io.Writer, _ GenOption) {
 	fmt.Fprintf(w, "import (\n")
 	switch g.Kind {
 	case "ComponentDefinition", "TraitDefinition":
-		fmt.Fprintf(w, `
-	"github.com/oam-dev/kubevela-core-api/apis/core.oam.dev/common"
-`)
+		fmt.Fprintf(w, `"github.com/oam-dev/kubevela-core-api/apis/core.oam.dev/common"`)
 	case "PolicyDefinition":
-		fmt.Fprintf(w, `
-	"github.com/oam-dev/kubevela-core-api/apis/core.oam.dev/v1beta1"
-`)
+		fmt.Fprintf(w, `"github.com/oam-dev/kubevela-core-api/apis/core.oam.dev/v1beta1"`)
 	}
 	fmt.Fprintf(w, `
 	"github.com/oam-dev/kubevela-core-api/pkg/oam/util"
