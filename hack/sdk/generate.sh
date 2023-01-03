@@ -12,10 +12,10 @@ do
     # get the file name without suffix
     filename=${filename%.*}
     # generate the API types
-    ./bin/vela def gen-api ./vela-templates/definitions/internal/component/"$filename".cue --package-name component --output ../vela-go-sdk/component/"$filename".go
+     ./bin/vela def gen-api ./vela-templates/definitions/internal/component/"$filename".cue --package-name "$filename" --output ../vela-go-sdk/component/"$filename"/"$filename".go
+
 done
 
-# for loop the file in ./vela-templates/definitions/internal/trait
 for file in ./vela-templates/definitions/internal/trait/*.cue
 do
     # get the file name
@@ -23,5 +23,5 @@ do
     # get the file name without suffix
     filename=${filename%.*}
     # generate the API types
-    ./bin/vela def gen-api ./vela-templates/definitions/internal/trait/"$filename".cue --package-name trait --output ../vela-go-sdk/trait/"$filename".go
+    ./bin/vela def gen-api ./vela-templates/definitions/internal/trait/"$filename".cue --package-name "$filename" --output ../vela-go-sdk/trait/"$filename"/"$filename".go
 done
