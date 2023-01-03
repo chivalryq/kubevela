@@ -434,12 +434,23 @@ func (g *Generator) printPackage(w io.Writer, option GenOption) {
 }
 
 func (g *Generator) printImports(w io.Writer, _ GenOption) {
-	fmt.Fprintf(w, `import (
+	fmt.Fprintf(w, "import (\n")
+	switch g.Kind {
+	case "ComponentDefinition", "TraitDefinition":
+		fmt.Fprintf(w, `
 	"github.com/oam-dev/kubevela-core-api/apis/core.oam.dev/common"
+`)
+	case "PolicyDefinition":
+		fmt.Fprintf(w, `
+	"github.com/oam-dev/kubevela-core-api/apis/core.oam.dev/v1beta1"
+`)
+	}
+	fmt.Fprintf(w, `
 	"github.com/oam-dev/kubevela-core-api/pkg/oam/util"
 	. "vela-go-sdk/api"
 )
 `)
+
 }
 
 func (g *Generator) printTypeVar(w io.Writer, _ GenOption) {
@@ -513,9 +524,9 @@ func (g *Generator) printBuildFunc(w io.Writer, option GenOption) {
 	case "TraitDefinition":
 		g.printBuildFuncForTrait(w, option)
 	case "PolicyDefinition":
-		//g.printBuildFuncForPolicy(w,option)
+		g.printBuildFuncForPolicy(w, option)
 	case "WorkflowStepDefinition":
-		//g.printBuildFuncForWorkflowStep(w,option)
+		g.printBuildFuncForWorkflowStep(w, option)
 	}
 }
 
@@ -550,6 +561,29 @@ func (g *Generator) printBuildFuncForTrait(w io.Writer, _ GenOption) {
     return trait
 }
 `, g.funcReceiver(), g.typeVarName, g.receiverName)
+}
+
+func (g *Generator) printBuildFuncForPolicy(w io.Writer, _ GenOption) {
+	fmt.Fprintf(w, `
+%s Build() v1beta1.AppPolicy {
+    policy := v1beta1.AppPolicy {
+    	Name:       %s.Base.Name,
+    	Type:       %s,
+    	Properties: util.Object2RawExtension(%s.Props),
+    }
+    return policy
+}
+`, g.funcReceiver(), g.receiverName, g.typeVarName, g.receiverName)
+}
+
+func (g *Generator) printBuildFuncForWorkflowStep(w io.Writer, _ GenOption) {
+	fmt.Fprintf(w, `
+%s Build() v1alpha1.WorkflowStep {
+    step := v1alpha1.WorkflowStep {
+        Name: %s,
+		Type: %s,
+		Properties: util.Object2RawExtension(%s.Props),
+}`)
 }
 
 func (g *Generator) printPropertiesFunc(w io.Writer, _ GenOption) {
