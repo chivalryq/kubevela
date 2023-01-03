@@ -64,8 +64,10 @@ type Field struct {
 	OmitEmpty bool
 	Param     *StructParameter
 	Usage     string
-	GetGoType func() string
+	GetGoType GoTypeGetter
 }
+
+type GoTypeGetter func() string
 
 type GenOption struct {
 	SkipPackageName bool
@@ -249,7 +251,11 @@ func (g *Generator) parseParameters(paraValue cue.Value, paramKey string) (*Stru
 						ik := mapValue.IncompleteKind()
 						switch ik {
 						case cue.StructKind:
-							fmt.Println(ik)
+							_structName, inlineStruct, err := g.parseStruct(mapValue, name+"Item")
+							if err != nil {
+								return nil, err
+							}
+							setFieldGoTypeWithNameOrStruct(&field, _structName, inlineStruct, goTypeOrigin, goTypeParamMap)
 						case cue.ListKind:
 							return nil, errors.New("map value is list not supported")
 						default:
@@ -264,48 +270,23 @@ func (g *Generator) parseParameters(paraValue cue.Value, paramKey string) (*Stru
 					if err != nil {
 						return nil, err
 					}
-					if _structName != "" {
-						field.GetGoType = goTypeFixed(_structName)
-					} else if inlineStruct != nil {
-						field.GetGoType = goTypeParam(inlineStruct)
-					}
-
-					//_, p := val.ReferencePath()
-					//sels := p.Selectors()
-					//if sels != nil {
-					//	// Reference to a struct definition
-					//	defNameWithoutSharp := strings.TrimPrefix(sels[len(sels)-1].String(), "#")
-					//	field.GetGoType = goTypeFixed(DefaultNamer.FieldName(defNameWithoutSharp))
-					//} else {
-					//	subParam, err := g.parseParameters(val, name)
-					//	if err != nil {
-					//		return nil, err
-					//	}
-					//	field.GetGoType = goTypeParam(subParam)
-					//}
+					setFieldGoTypeWithNameOrStruct(&field, _structName, inlineStruct, goTypeOrigin, goTypeParam)
 				}
 			case cue.ListKind:
 				elem, success := val.Elem()
 				if !success {
 					// fail to get elements, use the value of ListKind to be the type
-					field.GetGoType = goTypeFixed(normalizeGoType(val.IncompleteKind().String()))
+					// todo this isn't right, the result can be "type foo list"
+					field.GetGoType = goTypeFixed("[]" + normalizeGoType(elem.IncompleteKind().String()))
 					break
 				}
 				switch elem.Kind() {
 				case cue.StructKind:
-					_, p := elem.ReferencePath()
-					sels := p.Selectors()
-					if sels != nil {
-						// Reference to a struct definition
-						defNameWithoutSharp := strings.TrimPrefix(sels[len(sels)-1].String(), "#")
-						field.GetGoType = goTypeFixed("[]" + DefaultNamer.FieldName(defNameWithoutSharp))
-					} else {
-						subParam, err := g.parseParameters(elem, name)
-						if err != nil {
-							return nil, err
-						}
-						field.GetGoType = goTypeParamList(subParam)
+					_structName, inlineStruct, err := g.parseStruct(elem, name)
+					if err != nil {
+						return nil, err
 					}
+					setFieldGoTypeWithNameOrStruct(&field, _structName, inlineStruct, goTypeListRefDef, goTypeParamList)
 				default:
 					field.GetGoType = goTypeFixed(fmt.Sprintf("[]%s", elem.IncompleteKind().String()))
 				}
@@ -584,11 +565,6 @@ func (g *Generator) printPropertiesFunc(w io.Writer, _ GenOption) {
 		if usage == "" {
 			usage = "-"
 		}
-		if field.GetGoType == nil {
-			fmt.Println(field.Name, "getGoType is nil")
-			continue
-		}
-
 		fmt.Fprintf(w, "// %s %s\n", field.Name, usage)
 		fmt.Fprintf(w, `%s %s(value %s) *%s {
     %s.Props.%s = value
@@ -667,10 +643,6 @@ func genField(param StructParameter, writer io.Writer) {
 					jsonTag := f.JsonTag
 					if f.OmitEmpty {
 						jsonTag = fmt.Sprintf("%s,omitempty", jsonTag)
-					}
-					if f.GetGoType == nil {
-						fmt.Println(f.Name, "getGoType is nil")
-						continue
 					}
 					fmt.Fprintf(writer, "    %s %s `json:\"%s\"`\n", f.Name, f.GetGoType(), jsonTag)
 				}
@@ -812,14 +784,35 @@ func goTypeFixed(goType string) func() string {
 	}
 }
 
-func goTypeParam(param *StructParameter) func() string {
-	return func() string {
-		return param.GoType
-	}
+func goTypeOrigin(goType string) string {
+	return goType
 }
 
-func goTypeParamList(param *StructParameter) func() string {
-	return func() string {
-		return "[]" + param.GoType
+func goTypeListRefDef(goType string) string {
+	return "[]" + goType
+}
+
+func goTypeParam(param *StructParameter) string {
+	return param.GoType
+}
+
+func goTypeParamList(param *StructParameter) string {
+	return "[]" + param.GoType
+}
+
+func goTypeParamMap(param *StructParameter) string {
+	return "map[string]" + param.GoType
+}
+
+func setFieldGoTypeWithNameOrStruct(field *Field, name string, goType *StructParameter, nameConverter func(string) string, goTypeConverter func(parameter *StructParameter) string) {
+	if name != "" {
+		field.GetGoType = func() string {
+			return nameConverter(name)
+		}
+	}
+	if goType != nil {
+		field.GetGoType = func() string {
+			return goTypeConverter(goType)
+		}
 	}
 }
