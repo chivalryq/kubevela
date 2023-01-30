@@ -84,6 +84,8 @@ jobs:
           ${{ env.DIST_DIRS }} zip -r kubectl-vela-{}.zip {} \; && \
           cd .. && \
           sha256sum vela/vela-* kubectl-vela/kubectl-vela-* >> sha256-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.txt \
+          cat sha256-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.txt
+          sha256sum vela/vela-*
       - name: Upload Vela tar.gz
         uses: kubevela/vela-upload-release-asset@9b3858e67d3205e056d6220e5972abb32fc47289 # v1.0.0
         with:
