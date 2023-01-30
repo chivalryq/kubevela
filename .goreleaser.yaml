@@ -32,6 +32,7 @@ builds:
 
 archives:
   - format: zip
+    id: zip
     # this name template makes the OS and Arch compatible with the results of uname.
     name_template: >-
       {{ .ArtifactName }}-
@@ -40,6 +41,7 @@ archives:
       {{ .Arch }}
 
   - format: tar.gz
+    id: tgz
     # this name template makes the OS and Arch compatible with the results of uname.
     name_template: >-
       {{ .ArtifactName }}-
