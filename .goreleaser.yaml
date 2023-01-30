@@ -2,13 +2,9 @@
 # Make sure to check the documentation at https://goreleaser.com
 before:
   hooks:
-    # You may remove this if you don't use go modules.
-    - go mod tidy
-    # you may remove this if you don't need go generate
-    - go generate ./...
+    - make reviewable
 builds:
-  - env:
-      - CGO_ENABLED=0
+  - id: vela-cli
     goos:
       - linux
       - windows
@@ -20,8 +16,11 @@ builds:
     binary: vela
     ldflags:
       - -s -w -X github.com/oam-dev/kubevela/version.VelaVersion={{ .Version }} -X github.com/oam-dev/kubevela/version.GitRevision={{.Commit}}
+    env:
+      - CGO_ENABLED=0
 
-  - env:
+  - id: kubectl-vela
+    env:
       - CGO_ENABLED=0
     goos:
       - linux
@@ -30,7 +29,7 @@ builds:
     goarch:
       - amd64
       - arm64
-    main: kubectl-vela
+    main: ./cmd/plugin/main.go
     ldflags:
       - -s -w -X github.com/oam-dev/kubevela/version.VelaVersion={{ .Version }} -X github.com/oam-dev/kubevela/version.GitRevision={{.Commit}}
 
@@ -49,7 +48,7 @@ archives:
     - goos: windows
       format: zip
 checksum:
-  name_template: 'checksums.txt'
+  name_template: 'sha256sums.txt'
 snapshot:
   name_template: "{{ incpatch .Version }}-next"
 changelog:
