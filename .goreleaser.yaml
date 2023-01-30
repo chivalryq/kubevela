@@ -2,6 +2,7 @@
 # Make sure to check the documentation at https://goreleaser.com
 builds:
   - id: vela-cli
+    binary: vela
     goos:
       - linux
       - windows
@@ -10,13 +11,13 @@ builds:
       - amd64
       - arm64
     main: ./references/cmd/cli/main.go
-    binary: vela
     ldflags:
       - -s -w -X github.com/oam-dev/kubevela/version.VelaVersion={{ .Version }} -X github.com/oam-dev/kubevela/version.GitRevision={{.Commit}}
     env:
       - CGO_ENABLED=0
 
   - id: kubectl-vela
+    binary: kubectl-vela
     env:
       - CGO_ENABLED=0
     goos:
@@ -35,19 +36,12 @@ archives:
     id: zip
     # this name template makes the OS and Arch compatible with the results of uname.
     name_template: >-
-      {{ .ArtifactName }}-
-      {{ .Tag }}-
-      {{ .Os }}-
-      {{ .Arch }}
-
+      {{ .ArtifactName }}-{{ .Tag }}-{{ .Os }}-{{ .Arch }}
   - format: tar.gz
     id: tgz
     # this name template makes the OS and Arch compatible with the results of uname.
     name_template: >-
-      {{ .ArtifactName }}-
-      {{ .Tag }}-
-      {{ .Os }}-
-      {{ .Arch }}
+      {{ .ArtifactName }}-{{ .Tag }}-{{ .Os }}-{{ .Arch }}
 checksum:
   name_template: 'sha256sums.txt'
 snapshot:
