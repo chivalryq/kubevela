@@ -1,8 +1,5 @@
 # This is an example .goreleaser.yml file with some sensible defaults.
 # Make sure to check the documentation at https://goreleaser.com
-before:
-  hooks:
-    - make reviewable
 builds:
   - id: vela-cli
     goos:
@@ -34,19 +31,21 @@ builds:
       - -s -w -X github.com/oam-dev/kubevela/version.VelaVersion={{ .Version }} -X github.com/oam-dev/kubevela/version.GitRevision={{.Commit}}
 
 archives:
+  - format: zip
+    # this name template makes the OS and Arch compatible with the results of uname.
+    name_template: >-
+      {{ .ArtifactName }}-
+      {{ .Tag }}-
+      {{ .Os }}-
+      {{ .Arch }}
+
   - format: tar.gz
     # this name template makes the OS and Arch compatible with the results of uname.
     name_template: >-
-      {{ .ProjectName }}_
-      {{- title .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
-      {{- else if eq .Arch "386" }}i386
-      {{- else }}{{ .Arch }}{{ end }}
-      {{- if .Arm }}v{{ .Arm }}{{ end }}
-    # use zip for windows archives
-    format_overrides:
-    - goos: windows
-      format: zip
+      {{ .ArtifactName }}-
+      {{ .Tag }}-
+      {{ .Os }}-
+      {{ .Arch }}
 checksum:
   name_template: 'sha256sums.txt'
 snapshot:
