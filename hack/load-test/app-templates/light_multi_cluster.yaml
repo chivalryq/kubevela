@@ -42,7 +42,8 @@ spec:
     - name: topo
       type: topology
       properties:
-          clusters: [cluster-CLUSTER]
+        clusterLabelSelector:
+          load-test/group: "GROUP"
   workflow:
     steps:
       - name: deploy
