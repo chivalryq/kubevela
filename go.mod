@@ -303,3 +303,7 @@ replace (
 	github.com/wercker/stern => github.com/oam-dev/stern v1.13.2
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client => sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.36
 )
+
+replace (
+	github.com/kubevela/pkg => ../pkg
+)

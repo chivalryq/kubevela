@@ -318,6 +318,10 @@ func createOrGetExisting(ctx context.Context, act *applyAction, c client.Client,
 
 	existing := &unstructured.Unstructured{}
 	existing.GetObjectKind().SetGroupVersionKind(desired.GetObjectKind().GroupVersionKind())
+	if desired.GetName() == "express-server" {
+		fmt.Println("debug")
+	}
+	// Should this go to sub cluster?
 	err := c.Get(ctx, types.NamespacedName{Name: desired.GetName(), Namespace: desired.GetNamespace()}, existing)
 	if kerrors.IsNotFound(err) {
 		return create()

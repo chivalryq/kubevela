@@ -82,7 +82,7 @@ template: {
 
 	let ingressOutputName = "ingress" + nameSuffix
 	let ingressMetaName = context.name + nameSuffix
-	legacyAPI: context.clusterVersion.minor < 19
+	legacyAPI: context.clusterVersion.minor < 24
 
 	outputs: (ingressOutputName): {
 		if legacyAPI {
